@@ -103,6 +103,14 @@ export default function App() {
   const [feeRateInput, setFeeRateInput] = useState('300000');
   const [savingFee, setSavingFee] = useState(false);
 
+  // QUẢN LÝ TÀI KHOẢN HLV
+  const [accounts, setAccounts] = useState([]);
+  const [accountsLoading, setAccountsLoading] = useState(false);
+  const [newCoachName, setNewCoachName] = useState('');
+  const [newCoachUsername, setNewCoachUsername] = useState('');
+  const [newCoachPassword, setNewCoachPassword] = useState('');
+  const [creatingCoach, setCreatingCoach] = useState(false);
+
   // Đăng nhập và theo dõi phiên
   useEffect(() => {
     if (!ready) {
@@ -126,7 +134,9 @@ export default function App() {
       setFeeRows([]);
       setMarks({});
       setHistory({});
+      setAccounts([]);
       setErr('');
+      setTab('list');
     });
 
     return () => {
@@ -168,6 +178,105 @@ export default function App() {
       cancelled = true;
     };
   }, [session?.user?.id]);
+
+  // Tải danh sách tài khoản
+  async function loadAccounts() {
+    if (profile?.role !== 'admin') return;
+
+    setAccountsLoading(true);
+
+    try {
+      const { data, error } = await db
+        .from('profiles')
+        .select('id,full_name,role')
+        .order('full_name');
+
+      if (error) {
+        setErr('Lỗi tải tài khoản: ' + error.message);
+        return;
+      }
+
+      setAccounts(data || []);
+    } catch (error) {
+      setErr('Lỗi tải tài khoản: ' + (error?.message || error));
+    } finally {
+      setAccountsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (profile?.role === 'admin' && tab === 'accounts') {
+      loadAccounts();
+    }
+  }, [profile?.id, profile?.role, tab]);
+
+  // Tạo tài khoản HLV
+  async function createCoach(e) {
+    e.preventDefault();
+
+    if (creatingCoach) return;
+
+    setErr('');
+
+    const fullName = newCoachName.trim();
+    const cleanUsername = newCoachUsername.trim().toLowerCase();
+
+    if (!fullName) {
+      setErr('Vui lòng nhập họ tên HLV.');
+      return;
+    }
+
+    if (!/^[a-z0-9._-]{3,30}$/.test(cleanUsername)) {
+      setErr('Tên đăng nhập phải có 3–30 ký tự, chỉ dùng chữ không dấu, số, dấu chấm, gạch dưới hoặc gạch ngang.');
+      return;
+    }
+
+    if (newCoachPassword.length < 8) {
+      setErr('Mật khẩu phải có ít nhất 8 ký tự.');
+      return;
+    }
+
+    setCreatingCoach(true);
+
+    try {
+      const { data, error } = await db.functions.invoke('create-coach', {
+        body: {
+          username: cleanUsername,
+          password: newCoachPassword,
+          full_name: fullName
+        }
+      });
+
+      if (error) {
+        let message = error.message;
+
+        try {
+          const detail = await error.context?.json?.();
+          if (detail?.error) message = detail.error;
+        } catch {}
+
+        setErr('Không tạo được tài khoản: ' + message);
+        return;
+      }
+
+      if (data?.error) {
+        setErr('Không tạo được tài khoản: ' + data.error);
+        return;
+      }
+
+      setNewCoachName('');
+      setNewCoachUsername('');
+      setNewCoachPassword('');
+
+      await loadAccounts();
+
+      setErr('Đã tạo tài khoản HLV thành công.');
+    } catch (error) {
+      setErr('Lỗi tạo tài khoản: ' + (error?.message || error));
+    } finally {
+      setCreatingCoach(false);
+    }
+  }
 
   // Tải võ sinh và dữ liệu điểm danh
   async function loadRows() {
@@ -277,7 +386,7 @@ export default function App() {
     return true;
   }
 
-  // Tải hóa đơn và thanh toán
+  // Tải hóa đơn và thanh toán, bao gồm tên người thu
   async function loadFees() {
     setFeesLoading(true);
 
@@ -311,7 +420,7 @@ export default function App() {
           .in('id', ids),
 
         db.from('tuition_payments')
-          .select('id,invoice_id,amount,payment_method,paid_at,note')
+          .select('id,invoice_id,amount,payment_method,paid_at,note,collector_id')
           .in('invoice_id', invoiceIds)
           .order('paid_at', { ascending: false })
       ]);
@@ -326,21 +435,55 @@ export default function App() {
         return false;
       }
 
+      const payments = paymentResult.data || [];
+
+      // Lấy tên những người đã thu tiền
+      const collectorIds = [
+        ...new Set(
+          payments
+            .map(p => p.collector_id)
+            .filter(Boolean)
+        )
+      ];
+
+      let collectorMap = {};
+
+      if (collectorIds.length) {
+        const collectorResult = await db
+          .from('profiles')
+          .select('id,full_name')
+          .in('id', collectorIds);
+
+        if (collectorResult.error) {
+          setErr('Lỗi tải tên người thu tiền: ' + collectorResult.error.message);
+          return false;
+        }
+
+        collectorMap = Object.fromEntries(
+          (collectorResult.data || []).map(x => [x.id, x.full_name])
+        );
+      }
+
       const studentMap = Object.fromEntries(
         (studentResult.data || []).map(x => [x.id, x])
       );
 
       const sums = {};
 
-      (paymentResult.data || []).forEach(p => {
+      payments.forEach(p => {
         sums[p.invoice_id] = (sums[p.invoice_id] || 0) + Number(p.amount);
       });
+
+      const paymentsWithCollector = payments.map(p => ({
+        ...p,
+        collector_name: collectorMap[p.collector_id] || null
+      }));
 
       setFeeRows(invoices.map(x => ({
         ...x,
         student: studentMap[x.student_id] || null,
         paid: sums[x.id] || 0,
-        payments: (paymentResult.data || []).filter(
+        payments: paymentsWithCollector.filter(
           p => p.invoice_id === x.id
         )
       })));
@@ -503,6 +646,11 @@ export default function App() {
 
     if (!['cash', 'transfer'].includes(method)) {
       setErr('Hình thức thanh toán không hợp lệ.');
+      return;
+    }
+
+    if (!session?.user?.id) {
+      setErr('Không xác định được tài khoản đang đăng nhập.');
       return;
     }
 
@@ -693,6 +841,9 @@ export default function App() {
 
           // Ghi ngày nhận tiền thực tế theo giờ Việt Nam
           paid_at: today(),
+
+          // Lưu tài khoản HLV đang thực hiện thu tiền
+          collector_id: session.user.id,
 
           note: 'Tự động ưu tiên tháng nợ cũ nhất'
         });
@@ -1099,8 +1250,8 @@ export default function App() {
       <section className="card">
         <h2>Tài khoản chưa được phân quyền</h2>
         <p>
-          Quản trị viên cần thêm hồ sơ cho tài khoản
-          trong bảng profiles.
+          Tài khoản chưa có hồ sơ trong bảng profiles.
+          Vui lòng liên hệ quản trị viên.
         </p>
         <button onClick={() => db.auth.signOut()}>
           Đăng xuất
@@ -1140,7 +1291,9 @@ export default function App() {
               ? 'Quản lý hồ sơ võ sinh'
               : tab === 'attendance'
               ? 'Điểm danh buổi tập'
-              : 'Quản lý học phí'}
+              : tab === 'fees'
+              ? 'Quản lý học phí'
+              : 'Quản lý tài khoản HLV'}
           </h2>
         </div>
 
@@ -1204,10 +1357,130 @@ export default function App() {
         >
           Học phí
         </button>
+
+        {profile.role === 'admin' &&
+          <button
+            className={tab === 'accounts' ? 'chosen' : ''}
+            onClick={() => {
+              setErr('');
+              setTab('accounts');
+            }}
+          >
+            Tài khoản HLV
+          </button>
+        }
       </nav>
 
       <section className="card">
-        {tab !== 'fees' &&
+        {tab === 'accounts' && profile.role === 'admin' ? <>
+          <p className="section-note">
+            Chỉ quản trị viên được tạo tài khoản mới.
+            Các tài khoản HLV có thể cùng quản lý dữ liệu võ sinh,
+            điểm danh và học phí của câu lạc bộ.
+          </p>
+
+          <h3>Tạo tài khoản huấn luyện viên</h3>
+
+          <form className="grid" onSubmit={createCoach}>
+            <label>
+              Họ và tên HLV *
+              <input
+                required
+                value={newCoachName}
+                onChange={e => setNewCoachName(e.target.value)}
+                placeholder="Ví dụ: Nguyễn Văn A"
+              />
+            </label>
+
+            <label>
+              Tên đăng nhập *
+              <input
+                required
+                minLength={3}
+                maxLength={30}
+                value={newCoachUsername}
+                onChange={e => setNewCoachUsername(e.target.value)}
+                placeholder="Ví dụ: hlv_a"
+                autoComplete="off"
+              />
+            </label>
+
+            <label>
+              Mật khẩu *
+              <input
+                required
+                type="password"
+                minLength={8}
+                value={newCoachPassword}
+                onChange={e => setNewCoachPassword(e.target.value)}
+                placeholder="Ít nhất 8 ký tự"
+                autoComplete="new-password"
+              />
+            </label>
+
+            <div className="actions">
+              <button
+                className="primary"
+                disabled={creatingCoach}
+              >
+                {creatingCoach ? 'Đang tạo tài khoản…' : '＋ Tạo tài khoản HLV'}
+              </button>
+            </div>
+          </form>
+
+          <hr />
+
+          <div className="bottom">
+            <h3>Danh sách tài khoản</h3>
+            <button
+              onClick={loadAccounts}
+              disabled={accountsLoading}
+            >
+              {accountsLoading ? 'Đang tải…' : 'Tải lại danh sách'}
+            </button>
+          </div>
+
+          <div className="scroll">
+            <table className="management-table">
+              <thead>
+                <tr>
+                  <th>STT</th>
+                  <th>Họ và tên</th>
+                  <th>Vai trò</th>
+                  <th>Mã tài khoản</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {accounts.map((account, i) =>
+                  <tr key={account.id}>
+                    <td>{i + 1}</td>
+                    <td><b>{account.full_name || 'Chưa có tên'}</b></td>
+                    <td>
+                      <span className={
+                        'status-pill ' +
+                        (account.role === 'admin' ? 'active' : 'paused')
+                      }>
+                        {account.role === 'admin'
+                          ? 'Quản trị viên'
+                          : 'Huấn luyện viên'}
+                      </span>
+                    </td>
+                    <td>
+                      <small>{account.id.slice(0, 8)}…</small>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+
+            {accountsLoading && <p>Đang tải tài khoản…</p>}
+
+            {!accounts.length && !accountsLoading &&
+              <p className="empty">Chưa có dữ liệu tài khoản.</p>
+            }
+          </div>
+        </> : tab !== 'fees' && tab !== 'accounts' ?
           <div className="filters">
             <input
               placeholder={
@@ -1246,7 +1519,7 @@ export default function App() {
               </label>
             }
           </div>
-        }
+        : null}
 
         {tab === 'list' ? <>
           <p className="section-note">
@@ -1444,7 +1717,7 @@ export default function App() {
             <span>{filtered.length} võ sinh trong danh sách điểm danh</span>
           </div>
 
-        </> : <>
+        </> : tab === 'fees' ? <>
           <div className="filters">
             <label className="date-label">
               Tháng thu học phí
@@ -1543,6 +1816,8 @@ export default function App() {
                               {fmt(p.paid_at)} · {money(p.amount)} ·
                               {' '}
                               {p.payment_method === 'cash' ? 'Tiền mặt' : 'Chuyển khoản'}
+                              {' · Người thu: '}
+                              {p.collector_name || 'Chưa lưu thông tin'}
                             </small>
                           )}
                         </div>
@@ -1606,7 +1881,7 @@ export default function App() {
                       }
                     </td>
                   </tr>
-                )}
+                })}
               </tbody>
             </table>
 
@@ -1648,7 +1923,7 @@ export default function App() {
               Xuất học phí CSV
             </button>
           </div>
-        </>}
+        </> : null}
       </section>
 
       <footer>
