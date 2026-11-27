@@ -1,0 +1,15 @@
+-- Supabase > SQL Editor > New query. Thay EMAIL_QUAN_TRI bằng email đăng nhập quản trị.
+create table if not exists public.profiles(id uuid primary key references auth.users(id) on delete cascade,full_name text,role text not null default 'coach' check(role in('admin','coach')),created_at timestamptz default now());
+create table if not exists public.students(id uuid primary key default gen_random_uuid(),code text not null unique,full_name text not null,birth_date date,phone text,class_name text,belt text default 'Trắng',join_date date,status text not null default 'Đang tập' check(status in('Đang tập','Bảo lưu','Đã nghỉ')),notes text,created_at timestamptz default now());
+create table if not exists public.sessions(id uuid primary key default gen_random_uuid(),session_date date not null,class_name text not null,created_at timestamptz default now(),unique(session_date,class_name));
+create table if not exists public.attendance(id uuid primary key default gen_random_uuid(),session_id uuid not null references public.sessions(id) on delete cascade,student_id uuid not null references public.students(id) on delete cascade,status text not null check(status in('Có mặt','Vắng','Có phép')),created_at timestamptz default now(),unique(session_id,student_id));
+alter table public.profiles enable row level security;alter table public.students enable row level security;alter table public.sessions enable row level security;alter table public.attendance enable row level security;
+create or replace function public.is_staff() returns boolean language sql security definer set search_path=public as $$ select exists(select 1 from public.profiles where id=auth.uid()) $$;
+create or replace function public.is_admin() returns boolean language sql security definer set search_path=public as $$ select exists(select 1 from public.profiles where id=auth.uid() and role='admin') $$;
+drop policy if exists profile_select on public.profiles;create policy profile_select on public.profiles for select to authenticated using(id=auth.uid() or public.is_admin());
+drop policy if exists profile_admin_all on public.profiles;create policy profile_admin_all on public.profiles for all to authenticated using(public.is_admin()) with check(public.is_admin());
+drop policy if exists students_staff_all on public.students;create policy students_staff_all on public.students for all to authenticated using(public.is_staff()) with check(public.is_staff());
+drop policy if exists sessions_staff_all on public.sessions;create policy sessions_staff_all on public.sessions for all to authenticated using(public.is_staff()) with check(public.is_staff());
+drop policy if exists attendance_staff_all on public.attendance;create policy attendance_staff_all on public.attendance for all to authenticated using(public.is_staff()) with check(public.is_staff());
+insert into public.profiles(id,full_name,role) select id,'Quản trị CLB Karate TH Bình Thuận','admin' from auth.users where email='EMAIL_QUAN_TRI' on conflict(id) do update set role='admin';
+-- Tài khoản huấn luyện viên: tạo trong Authentication > Users, rồi thêm hàng profiles với đúng user UUID và role='coach'.
