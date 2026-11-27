@@ -14,8 +14,9 @@ jobs:
 
       - name: Extract and update files
         run: |
+          rm -rf temp
           mkdir -p temp
-          unzip -q CLB_Karate_TH_Binh_Thuan_Cap_Nhat.zip -d temp
+          unzip -o -q CLB_Karate_TH_Binh_Thuan_Cap_Nhat.zip -d temp
           cp temp/CLB_Karate_TH_Binh_Thuan/src/App.jsx CLB_Karate_TH_Binh_Thuan/src/App.jsx
           cp temp/CLB_Karate_TH_Binh_Thuan/src/style.css CLB_Karate_TH_Binh_Thuan/src/style.css
           cp temp/CLB_Karate_TH_Binh_Thuan/supabase/update_existing.sql CLB_Karate_TH_Binh_Thuan/supabase/update_existing.sql
