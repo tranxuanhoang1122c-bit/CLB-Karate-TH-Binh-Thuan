@@ -2,7 +2,7 @@ import{useEffect,useMemo,useState}from'react';import{db,ready}from'./supabase';
 const today=()=>new Date().toLocaleDateString('en-CA'),fmt=d=>d?new Date(d+'T00:00:00').toLocaleDateString('vi-VN'):'—';
 const belts=['Trắng','Vàng','Cam','Xanh lá','Xanh dương','Tím','Nâu 0','Nâu 1','Nâu 2','Nâu 3','Đen','Khác'];
 const empty={full_name:'',birth_date:'',phone:'',class_name:'',belt:'Trắng',join_date:'',status:'Đang tập',notes:''};
-const loginEmail=u=>`${u.trim().toLowerCase()}@karate.invalid`;
+const loginEmail=u=>u.trim().toLowerCase().includes('@')?u.trim().toLowerCase():`${u.trim().toLowerCase()}@karate.invalid`;
 export default function App(){
 const[session,S]=useState(null),[profile,P]=useState(null),[loading,L]=useState(true),[username,E]=useState(''),[password,W]=useState(''),[err,X]=useState(''),[rows,R]=useState([]),[marks,M]=useState({}),[history,Hs]=useState({}),[date,D]=useState(today()),[q,Q]=useState(''),[cls,C]=useState(''),[status,F]=useState(''),[modal,V]=useState(false),[edit,G]=useState(null),[form,H]=useState(empty),[tab,T]=useState('list');
 useEffect(()=>{if(!ready){L(false);return}db.auth.getSession().then(({data})=>{S(data.session);L(false)});const{data:{subscription}}=db.auth.onAuthStateChange((_,s)=>{S(s);P(null)});return()=>subscription.unsubscribe()},[]);
