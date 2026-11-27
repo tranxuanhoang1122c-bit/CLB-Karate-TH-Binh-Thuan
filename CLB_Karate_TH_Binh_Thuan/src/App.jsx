@@ -2,13 +2,20 @@
 import { useEffect, useMemo, useState } from 'react';
 import { db, ready } from './supabase';
 
+// Ngày hiện tại theo múi giờ Việt Nam UTC+7
 const today = () => {
-  const d = new Date();
-  return [
-    d.getFullYear(),
-    String(d.getMonth() + 1).padStart(2, '0'),
-    String(d.getDate()).padStart(2, '0')
-  ].join('-');
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(new Date());
+
+  const values = Object.fromEntries(
+    parts.map(part => [part.type, part.value])
+  );
+
+  return `${values.year}-${values.month}-${values.day}`;
 };
 
 const fmt = d => {
@@ -480,7 +487,7 @@ export default function App() {
     }
   }
 
-  // Ghi nhận thanh toán nhiều tháng
+  // Ghi nhận thanh toán: ưu tiên tháng nợ cũ nhất trước
   async function addPayment(invoice) {
     if (paying) return;
 
@@ -503,20 +510,23 @@ export default function App() {
 
     try {
       const endMonth = monthAfter(feeMonth, 35) + '-01';
+      const selectedMonthStart = feeMonth + '-01';
 
+      // Lấy các hóa đơn từ trước đến 36 tháng tính từ tháng đang chọn
       const existingResult = await db
         .from('tuition_invoices')
         .select('id,student_id,billing_month,amount_due')
         .eq('student_id', invoice.student_id)
-        .gte('billing_month', feeMonth + '-01')
-        .lte('billing_month', endMonth);
+        .lte('billing_month', endMonth)
+        .order('billing_month', { ascending: true });
 
       if (existingResult.error) {
-        setErr(existingResult.error.message);
+        setErr('Lỗi tải các tháng học phí: ' + existingResult.error.message);
         return;
       }
 
       const existing = existingResult.data || [];
+
       const byMonth = Object.fromEntries(
         existing.map(x => [x.billing_month, x])
       );
@@ -530,29 +540,56 @@ export default function App() {
           .in('invoice_id', existing.map(x => x.id));
 
         if (paymentResult.error) {
-          setErr(paymentResult.error.message);
+          setErr('Lỗi kiểm tra lịch sử thanh toán: ' + paymentResult.error.message);
           return;
         }
 
         (paymentResult.data || []).forEach(x => {
-          paid[x.invoice_id] = (paid[x.invoice_id] || 0) + Number(x.amount);
+          paid[x.invoice_id] =
+            (paid[x.invoice_id] || 0) + Number(x.amount);
         });
       }
 
       let remaining = amount;
-      let lastMonth = feeMonth;
       const plan = [];
+      const missing = [];
 
+      // BƯỚC 1: Thanh toán các tháng cũ hơn tháng đang chọn trước
+      for (const inv of existing) {
+        if (inv.billing_month >= selectedMonthStart) break;
+        if (remaining <= 0) break;
+
+        const due = Number(inv.amount_due);
+        const already = paid[inv.id] || 0;
+        const left = Math.max(0, due - already);
+
+        if (left <= 0) continue;
+
+        const part = Math.min(left, remaining);
+
+        plan.push({
+          month: String(inv.billing_month).slice(0, 7),
+          date: inv.billing_month,
+          amount: part
+        });
+
+        remaining -= part;
+      }
+
+      // BƯỚC 2: Sau khi trả nợ cũ, mới thanh toán tháng đang chọn
+      // và các tháng tiếp theo
       for (let i = 0; i < 36 && remaining > 0; i++) {
         const month = monthAfter(feeMonth, i);
         const dateValue = month + '-01';
         const inv = byMonth[dateValue];
 
-        const due = inv ? Number(inv.amount_due) : Number(feeRate);
-        const already = inv ? (paid[inv.id] || 0) : 0;
-        const left = Math.max(0, due - already);
+        if (inv) {
+          const due = Number(inv.amount_due);
+          const already = paid[inv.id] || 0;
+          const left = Math.max(0, due - already);
 
-        if (left > 0) {
+          if (left <= 0) continue;
+
           const part = Math.min(left, remaining);
 
           plan.push({
@@ -562,23 +599,47 @@ export default function App() {
           });
 
           remaining -= part;
-          lastMonth = month;
+        } else {
+          // Chỉ tạo hóa đơn tháng mới khi thực sự cần phân bổ tiền
+          const monthlyAmount = Number(feeRate);
+
+          if (!Number.isInteger(monthlyAmount) || monthlyAmount < 1) {
+            setErr('Mức học phí hiện tại không hợp lệ.');
+            return;
+          }
+
+          const part = Math.min(monthlyAmount, remaining);
+
+          missing.push({
+            student_id: invoice.student_id,
+            billing_month: dateValue,
+            amount_due: monthlyAmount
+          });
+
+          plan.push({
+            month,
+            date: dateValue,
+            amount: part
+          });
+
+          remaining -= part;
         }
       }
 
       if (remaining > 0) {
-        setErr('Số tiền vượt quá khả năng phân bổ trong 36 tháng. Chưa ghi nhận thanh toán.');
+        setErr(
+          'Số tiền vượt quá khả năng phân bổ trong 36 tháng. ' +
+          'Chưa ghi nhận thanh toán.'
+        );
         return;
       }
 
-      const missing = plan
-        .filter(x => !byMonth[x.date])
-        .map(x => ({
-          student_id: invoice.student_id,
-          billing_month: x.date,
-          amount_due: feeRate
-        }));
+      if (!plan.length) {
+        setErr('Không tìm thấy khoản học phí còn nợ để thanh toán.');
+        return;
+      }
 
+      // BƯỚC 3: Tạo các hóa đơn tháng còn thiếu
       if (missing.length) {
         const createResult = await db
           .from('tuition_invoices')
@@ -588,12 +649,13 @@ export default function App() {
           });
 
         if (createResult.error) {
-          setErr('Lỗi tạo hóa đơn tháng tiếp theo: ' + createResult.error.message);
+          setErr('Lỗi tạo hóa đơn: ' + createResult.error.message);
           return;
         }
       }
 
-      const requiredDates = plan.map(x => x.date);
+      // BƯỚC 4: Lấy ID hóa đơn để ghi nhận thanh toán
+      const requiredDates = [...new Set(plan.map(x => x.date))];
 
       const refreshed = await db
         .from('tuition_invoices')
@@ -602,7 +664,7 @@ export default function App() {
         .in('billing_month', requiredDates);
 
       if (refreshed.error) {
-        setErr(refreshed.error.message);
+        setErr('Lỗi lấy hóa đơn để thanh toán: ' + refreshed.error.message);
         return;
       }
 
@@ -616,7 +678,11 @@ export default function App() {
         const inv = invoiceMap[item.date];
 
         if (!inv) {
-          setErr('Không tìm thấy hóa đơn tháng ' + item.month + '. Chưa ghi nhận thanh toán.');
+          setErr(
+            'Không tìm thấy hóa đơn tháng ' +
+            item.month +
+            '. Chưa ghi nhận thanh toán.'
+          );
           return;
         }
 
@@ -624,10 +690,15 @@ export default function App() {
           invoice_id: inv.id,
           amount: item.amount,
           payment_method: method,
-          note: 'Thu gộp từ ' + feeMonth
+
+          // Ghi ngày nhận tiền thực tế theo giờ Việt Nam
+          paid_at: today(),
+
+          note: 'Tự động ưu tiên tháng nợ cũ nhất'
         });
       }
 
+      // BƯỚC 5: Ghi nhận thanh toán
       const paymentInsert = await db
         .from('tuition_payments')
         .insert(inserts);
@@ -637,15 +708,34 @@ export default function App() {
         return;
       }
 
-      setPayAmounts(v => ({ ...v, [invoice.id]: '' }));
+      setPayAmounts(v => ({
+        ...v,
+        [invoice.id]: ''
+      }));
 
       const loaded = await loadFees();
       if (!loaded) return;
 
+      // BƯỚC 6: Thông báo tiền đã phân bổ vào từng tháng
+      const allocation = {};
+
+      plan.forEach(item => {
+        allocation[item.month] =
+          (allocation[item.month] || 0) + item.amount;
+      });
+
+      const details = Object.entries(allocation)
+        .map(([month, value]) =>
+          `${month}: ${money(value)}`
+        )
+        .join(' | ');
+
       setErr(
-        'Đã ghi nhận ' + money(amount) +
-        ', phân bổ đến tháng ' + lastMonth + '.'
+        'Đã thu ' + money(amount) +
+        '. Ngày thu: ' + fmt(today()) +
+        '. Phân bổ: ' + details
       );
+
     } catch (error) {
       setErr('Lỗi thanh toán: ' + (error?.message || error));
     } finally {
@@ -1393,7 +1483,8 @@ export default function App() {
 
           <p className="section-note">
             Có thể thu 1, 2 tháng, theo quý (3 tháng) hoặc nhiều tháng cùng lúc.
-            Nhập tổng số tiền; hệ thống tự phân bổ lần lượt vào từng tháng.
+            Nhập tổng số tiền; hệ thống tự ưu tiên thanh toán tháng nợ cũ nhất
+            trước, sau đó mới đến tháng đang chọn và các tháng tiếp theo.
             Ví dụ 600.000đ = 2 tháng nếu mức thu là 300.000đ/tháng.
             Mức mới chỉ áp dụng cho hóa đơn tạo sau này;
             hóa đơn cũ giữ nguyên.
@@ -1514,8 +1605,8 @@ export default function App() {
                         : <span>Hoàn tất</span>
                       }
                     </td>
-                  </tr>;
-                })}
+                  </tr>
+                )}
               </tbody>
             </table>
 
