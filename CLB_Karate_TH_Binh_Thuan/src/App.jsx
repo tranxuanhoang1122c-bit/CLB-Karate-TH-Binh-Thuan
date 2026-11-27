@@ -79,6 +79,7 @@ export default function App() {
   const [edit, setEdit] = useState(null);
   const [form, setForm] = useState(empty);
   const [savingStudent, setSavingStudent] = useState(false);
+  const [deletingStudent, setDeletingStudent] = useState(null);
 
   const [tab, setTab] = useState('list');
 
@@ -179,7 +180,6 @@ export default function App() {
       const students = studentResult.data || [];
       setRows(students);
 
-      // Lấy các buổi tập của ngày đang chọn
       const sessionResult = await db
         .from('sessions')
         .select('id')
@@ -191,7 +191,6 @@ export default function App() {
       }
 
       const sessionIds = (sessionResult.data || []).map(x => x.id);
-
       let todayAttendance = [];
 
       if (sessionIds.length) {
@@ -215,7 +214,6 @@ export default function App() {
 
       setMarks(currentMarks);
 
-      // Lấy lịch sử điểm danh
       const historyResult = await db
         .from('attendance')
         .select('student_id,status');
@@ -272,7 +270,7 @@ export default function App() {
     return true;
   }
 
-  // Tải hóa đơn, thông tin võ sinh và thanh toán
+  // Tải hóa đơn và thanh toán
   async function loadFees() {
     setFeesLoading(true);
 
@@ -357,7 +355,7 @@ export default function App() {
     }
   }, [profile?.id, tab, feeMonth]);
 
-  // Lưu mức học phí mới
+  // Lưu mức học phí
   async function saveFeeRate() {
     setErr('');
 
@@ -417,7 +415,7 @@ export default function App() {
     }
   }
 
-  // Tạo hóa đơn cho các võ sinh đang tập
+  // Tạo hóa đơn cho võ sinh đang tập
   async function createInvoices() {
     if (creatingInvoices) return;
 
@@ -469,7 +467,6 @@ export default function App() {
       }
 
       const loaded = await loadFees();
-
       if (!loaded) return;
 
       setErr(
@@ -483,7 +480,7 @@ export default function App() {
     }
   }
 
-  // Ghi nhận thanh toán, có thể thu nhiều tháng
+  // Ghi nhận thanh toán nhiều tháng
   async function addPayment(invoice) {
     if (paying) return;
 
@@ -520,7 +517,6 @@ export default function App() {
       }
 
       const existing = existingResult.data || [];
-
       const byMonth = Object.fromEntries(
         existing.map(x => [x.billing_month, x])
       );
@@ -575,7 +571,6 @@ export default function App() {
         return;
       }
 
-      // Tạo hóa đơn còn thiếu
       const missing = plan
         .filter(x => !byMonth[x.date])
         .map(x => ({
@@ -645,7 +640,6 @@ export default function App() {
       setPayAmounts(v => ({ ...v, [invoice.id]: '' }));
 
       const loaded = await loadFees();
-
       if (!loaded) return;
 
       setErr(
@@ -738,7 +732,7 @@ export default function App() {
     }
   }
 
-  // Điểm danh: tìm buổi tập, tạo nếu chưa có, rồi cập nhật hoặc thêm bản ghi
+  // Điểm danh
   async function mark(studentId, value) {
     const student = rows.find(x => x.id === studentId);
     if (!student) return;
@@ -748,7 +742,7 @@ export default function App() {
     try {
       const className = student.class_name || 'Chưa phân lớp';
 
-      let sessionResult = await db
+      const sessionResult = await db
         .from('sessions')
         .select('id')
         .eq('session_date', date)
@@ -821,24 +815,72 @@ export default function App() {
     }
   }
 
-  // Xóa võ sinh
+  // Xóa toàn bộ dữ liệu liên quan đến võ sinh
   async function deleteStudent(student) {
-    if (!confirm('Xóa hồ sơ ' + student.full_name + '?')) return;
+    if (deletingStudent) return;
+
+    const confirmed = confirm(
+      `CẢNH BÁO XÓA VĨNH VIỄN!\n\n` +
+      `Bạn có chắc chắn muốn xóa võ sinh "${student.full_name}"?\n\n` +
+      `Hệ thống sẽ xóa:\n` +
+      `- Hồ sơ võ sinh\n` +
+      `- Lịch sử điểm danh\n` +
+      `- Hóa đơn học phí\n` +
+      `- Lịch sử thanh toán\n\n` +
+      `Các buổi tập chung của CLB vẫn được giữ lại.\n\n` +
+      `Thao tác này không thể hoàn tác!`
+    );
+
+    if (!confirmed) return;
 
     setErr('');
+    setDeletingStudent(student.id);
 
-    const result = await db
-      .from('students')
-      .delete()
-      .eq('id', student.id);
+    try {
+      const result = await db
+        .from('students')
+        .delete()
+        .eq('id', student.id)
+        .select('id');
 
-    if (result.error) {
-      setErr('Không xóa được: ' + result.error.message);
-      return;
+      if (result.error) {
+        setErr('Không xóa được: ' + result.error.message);
+        return;
+      }
+
+      if (!result.data?.length) {
+        setErr('Không tìm thấy hồ sơ hoặc tài khoản không có quyền xóa.');
+        return;
+      }
+
+      setRows(v => v.filter(x => x.id !== student.id));
+
+      setMarks(v => {
+        const next = { ...v };
+        delete next[student.id];
+        return next;
+      });
+
+      setHistory(v => {
+        const next = { ...v };
+        delete next[student.id];
+        return next;
+      });
+
+      setFeeRows(v => v.filter(x => x.student_id !== student.id));
+
+      setErr('Đã xóa toàn bộ dữ liệu liên quan đến võ sinh.');
+
+      await loadRows();
+
+      if (tab === 'fees') {
+        await loadFees();
+      }
+    } catch (error) {
+      setErr('Lỗi xóa võ sinh: ' + (error?.message || error));
+    } finally {
+      setDeletingStudent(null);
     }
-
-    setErr('Đã xóa hồ sơ.');
-    await loadRows();
   }
 
   const classes = useMemo(
@@ -848,18 +890,29 @@ export default function App() {
     [rows]
   );
 
-  const filtered = rows.filter(s =>
-    (!q || [
-      s.full_name,
-      s.phone,
-      s.class_name
-    ].some(v =>
-      (v || '').toLocaleLowerCase('vi')
-        .includes(q.toLocaleLowerCase('vi'))
-    )) &&
-    (!cls || s.class_name === cls) &&
-    (!status || s.status === status)
-  );
+  // Lọc và tự động đưa võ sinh đã nghỉ xuống cuối
+  const filtered = rows
+    .filter(s =>
+      (!q || [
+        s.full_name,
+        s.phone,
+        s.class_name
+      ].some(v =>
+        (v || '').toLocaleLowerCase('vi')
+          .includes(q.toLocaleLowerCase('vi'))
+      )) &&
+      (!cls || s.class_name === cls) &&
+      (!status || s.status === status)
+    )
+    .sort((a, b) => {
+      const order = {
+        'Đang tập': 0,
+        'Bảo lưu': 1,
+        'Đã nghỉ': 2
+      };
+
+      return (order[a.status] ?? 3) - (order[b.status] ?? 3);
+    });
 
   const statFor = id => history[id] || {
     present: 0,
@@ -874,7 +927,6 @@ export default function App() {
   };
 
   const beltClass = b => b?.startsWith('Nâu') ? 'brown' : '';
-
   const markedValues = Object.values(marks);
 
   const exportCSV = (filename, headers, data) => {
@@ -1065,7 +1117,6 @@ export default function App() {
       </nav>
 
       <section className="card">
-
         {tab !== 'fees' &&
           <div className="filters">
             <input
@@ -1110,7 +1161,7 @@ export default function App() {
         {tab === 'list' ? <>
           <p className="section-note">
             Hồ sơ cá nhân, thông tin liên hệ, lớp và cấp đai.
-            Điểm danh được quản lý ở mục riêng.
+            Võ sinh đã nghỉ tự động được đưa xuống cuối danh sách.
           </p>
 
           <div className="scroll">
@@ -1163,8 +1214,12 @@ export default function App() {
                         Sửa
                       </button>
                       {' '}
-                      <button className="delete" onClick={() => deleteStudent(s)}>
-                        Xóa
+                      <button
+                        className="delete"
+                        disabled={deletingStudent === s.id || deletingStudent !== null}
+                        onClick={() => deleteStudent(s)}
+                      >
+                        {deletingStudent === s.id ? 'Đang xóa…' : 'Xóa'}
                       </button>
                     </td>
                   </tr>
