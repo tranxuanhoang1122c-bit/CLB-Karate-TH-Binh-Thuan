@@ -78,6 +78,9 @@ export default function App() {
   const [history, setHistory] = useState({});
   const [date, setDate] = useState(today());
 
+  // Lọc danh sách điểm danh theo trạng thái
+  const [attendanceView, setAttendanceView] = useState('');
+
   const [q, setQ] = useState('');
   const [cls, setCls] = useState('');
   const [status, setStatus] = useState('');
@@ -135,6 +138,7 @@ export default function App() {
       setMarks({});
       setHistory({});
       setAccounts([]);
+      setAttendanceView('');
       setErr('');
       setTab('list');
     });
@@ -239,11 +243,31 @@ export default function App() {
     setCreatingCoach(true);
 
     try {
+      // Lấy access token mới nhất của tài khoản đang đăng nhập
+      const { data: sessionData, error: sessionError } =
+        await db.auth.getSession();
+
+      if (sessionError) {
+        setErr('Không lấy được phiên đăng nhập: ' + sessionError.message);
+        return;
+      }
+
+      const accessToken = sessionData?.session?.access_token;
+
+      if (!accessToken) {
+        setErr('Phiên đăng nhập đã hết hạn. Vui lòng đăng xuất và đăng nhập lại.');
+        return;
+      }
+
+      // Gửi token rõ ràng đến Edge Function
       const { data, error } = await db.functions.invoke('create-coach', {
         body: {
           username: cleanUsername,
           password: newCoachPassword,
           full_name: fullName
+        },
+        headers: {
+          Authorization: `Bearer ${accessToken}`
         }
       });
 
@@ -253,6 +277,7 @@ export default function App() {
         try {
           const detail = await error.context?.json?.();
           if (detail?.error) message = detail.error;
+          else if (detail?.message) message = detail.message;
         } catch {}
 
         setErr('Không tạo được tài khoản: ' + message);
@@ -270,7 +295,7 @@ export default function App() {
 
       await loadAccounts();
 
-      setErr('Đã tạo tài khoản HLV thành công.');
+      setErr(data?.message || 'Đã tạo tài khoản HLV thành công.');
     } catch (error) {
       setErr('Lỗi tạo tài khoản: ' + (error?.message || error));
     } finally {
@@ -437,7 +462,6 @@ export default function App() {
 
       const payments = paymentResult.data || [];
 
-      // Lấy tên những người đã thu tiền
       const collectorIds = [
         ...new Set(
           payments
@@ -660,7 +684,6 @@ export default function App() {
       const endMonth = monthAfter(feeMonth, 35) + '-01';
       const selectedMonthStart = feeMonth + '-01';
 
-      // Lấy các hóa đơn từ trước đến 36 tháng tính từ tháng đang chọn
       const existingResult = await db
         .from('tuition_invoices')
         .select('id,student_id,billing_month,amount_due')
@@ -702,7 +725,7 @@ export default function App() {
       const plan = [];
       const missing = [];
 
-      // BƯỚC 1: Thanh toán các tháng cũ hơn tháng đang chọn trước
+      // Thanh toán các tháng cũ hơn tháng đang chọn trước
       for (const inv of existing) {
         if (inv.billing_month >= selectedMonthStart) break;
         if (remaining <= 0) break;
@@ -724,8 +747,7 @@ export default function App() {
         remaining -= part;
       }
 
-      // BƯỚC 2: Sau khi trả nợ cũ, mới thanh toán tháng đang chọn
-      // và các tháng tiếp theo
+      // Sau khi trả nợ cũ, mới thanh toán tháng đang chọn và tháng tiếp theo
       for (let i = 0; i < 36 && remaining > 0; i++) {
         const month = monthAfter(feeMonth, i);
         const dateValue = month + '-01';
@@ -748,7 +770,6 @@ export default function App() {
 
           remaining -= part;
         } else {
-          // Chỉ tạo hóa đơn tháng mới khi thực sự cần phân bổ tiền
           const monthlyAmount = Number(feeRate);
 
           if (!Number.isInteger(monthlyAmount) || monthlyAmount < 1) {
@@ -787,7 +808,7 @@ export default function App() {
         return;
       }
 
-      // BƯỚC 3: Tạo các hóa đơn tháng còn thiếu
+      // Tạo các hóa đơn tháng còn thiếu
       if (missing.length) {
         const createResult = await db
           .from('tuition_invoices')
@@ -802,7 +823,7 @@ export default function App() {
         }
       }
 
-      // BƯỚC 4: Lấy ID hóa đơn để ghi nhận thanh toán
+      // Lấy ID hóa đơn để ghi nhận thanh toán
       const requiredDates = [...new Set(plan.map(x => x.date))];
 
       const refreshed = await db
@@ -838,18 +859,12 @@ export default function App() {
           invoice_id: inv.id,
           amount: item.amount,
           payment_method: method,
-
-          // Ghi ngày nhận tiền thực tế theo giờ Việt Nam
           paid_at: today(),
-
-          // Lưu tài khoản HLV đang thực hiện thu tiền
           collector_id: session.user.id,
-
           note: 'Tự động ưu tiên tháng nợ cũ nhất'
         });
       }
 
-      // BƯỚC 5: Ghi nhận thanh toán
       const paymentInsert = await db
         .from('tuition_payments')
         .insert(inserts);
@@ -867,7 +882,6 @@ export default function App() {
       const loaded = await loadFees();
       if (!loaded) return;
 
-      // BƯỚC 6: Thông báo tiền đã phân bổ vào từng tháng
       const allocation = {};
 
       plan.forEach(item => {
@@ -1131,7 +1145,7 @@ export default function App() {
     [rows]
   );
 
-  // Lọc và tự động đưa võ sinh đã nghỉ xuống cuối
+  // Lọc danh sách võ sinh
   const filtered = rows
     .filter(s =>
       (!q || [
@@ -1169,6 +1183,24 @@ export default function App() {
 
   const beltClass = b => b?.startsWith('Nâu') ? 'brown' : '';
   const markedValues = Object.values(marks);
+
+  // Thống kê điểm danh theo ngày đang chọn
+  const presentStudents = rows.filter(s => marks[s.id] === 'Có mặt');
+  const absentStudents = rows.filter(s => marks[s.id] === 'Vắng');
+  const excusedStudents = rows.filter(s => marks[s.id] === 'Có phép');
+  const unmarkedStudents = rows.filter(s => !marks[s.id]);
+
+  // Bảng điểm danh chính luôn hiển thị theo bộ lọc tìm kiếm và lớp
+  const attendanceFiltered = filtered;
+
+  // Danh sách riêng khi bấm vào một trạng thái thống kê
+  const attendanceListStudents = filtered.filter(s => {
+    if (attendanceView === 'Có mặt') return marks[s.id] === 'Có mặt';
+    if (attendanceView === 'Vắng') return marks[s.id] === 'Vắng';
+    if (attendanceView === 'Có phép') return marks[s.id] === 'Có phép';
+    if (attendanceView === 'Chưa điểm danh') return !marks[s.id];
+    return false;
+  });
 
   const exportCSV = (filename, headers, data) => {
     const csv = '\uFEFF' + [
@@ -1332,7 +1364,7 @@ export default function App() {
 
         <div className="card">
           Có mặt ngày này
-          <b>{markedValues.filter(x => x === 'Có mặt').length}</b>
+          <b>{presentStudents.length}</b>
         </div>
       </div>
 
@@ -1346,7 +1378,10 @@ export default function App() {
 
         <button
           className={tab === 'attendance' ? 'chosen' : ''}
-          onClick={() => setTab('attendance')}
+          onClick={() => {
+            setAttendanceView('');
+            setTab('attendance');
+          }}
         >
           Điểm danh
         </button>
@@ -1514,7 +1549,10 @@ export default function App() {
                 <input
                   type="date"
                   value={date}
-                  onChange={e => setDate(e.target.value)}
+                  onChange={e => {
+                    setDate(e.target.value);
+                    setAttendanceView('');
+                  }}
                 />
               </label>
             }
@@ -1618,31 +1656,127 @@ export default function App() {
         </> : tab === 'attendance' ? <>
           <p className="section-note">
             Chọn trạng thái cho từng võ sinh trong buổi tập đã chọn.
+            Bấm vào các ô thống kê bên dưới để xem danh sách theo trạng thái.
             Thống kê chuyên cần được tính từ các lần điểm danh đã lưu.
           </p>
 
           <div className="attendance-summary">
-            <div>
-              <b>{markedValues.filter(x => x === 'Có mặt').length}</b>
+            <button
+              type="button"
+              className={attendanceView === 'Có mặt' ? 'chosen' : ''}
+              onClick={() => setAttendanceView(
+                attendanceView === 'Có mặt' ? '' : 'Có mặt'
+              )}
+            >
+              <b>{presentStudents.length}</b>
               <span>Có mặt</span>
-            </div>
+            </button>
 
-            <div>
-              <b>{markedValues.filter(x => x === 'Vắng').length}</b>
+            <button
+              type="button"
+              className={attendanceView === 'Vắng' ? 'chosen' : ''}
+              onClick={() => setAttendanceView(
+                attendanceView === 'Vắng' ? '' : 'Vắng'
+              )}
+            >
+              <b>{absentStudents.length}</b>
               <span>Vắng</span>
-            </div>
+            </button>
 
-            <div>
-              <b>{markedValues.filter(x => x === 'Có phép').length}</b>
+            <button
+              type="button"
+              className={attendanceView === 'Có phép' ? 'chosen' : ''}
+              onClick={() => setAttendanceView(
+                attendanceView === 'Có phép' ? '' : 'Có phép'
+              )}
+            >
+              <b>{excusedStudents.length}</b>
               <span>Có phép</span>
-            </div>
+            </button>
 
-            <div>
-              <b>{Math.max(0, rows.length - markedValues.length)}</b>
+            <button
+              type="button"
+              className={attendanceView === 'Chưa điểm danh' ? 'chosen' : ''}
+              onClick={() => setAttendanceView(
+                attendanceView === 'Chưa điểm danh' ? '' : 'Chưa điểm danh'
+              )}
+            >
+              <b>{unmarkedStudents.length}</b>
               <span>Chưa điểm danh</span>
-            </div>
+            </button>
           </div>
 
+          {/* BẢNG DANH SÁCH RIÊNG THEO TRẠNG THÁI */}
+          {attendanceView && (
+            <div className="card" style={{
+              marginTop: 16,
+              marginBottom: 20,
+              border: '1px solid #dbe3ee'
+            }}>
+              <div className="bottom">
+                <div>
+                  <h3>Danh sách võ sinh: {attendanceView}</h3>
+                  <small>
+                    Ngày {fmt(date)} · {attendanceListStudents.length} võ sinh
+                  </small>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setAttendanceView('')}
+                >
+                  Đóng danh sách
+                </button>
+              </div>
+
+              {attendanceListStudents.length > 0 ? (
+                <div className="scroll">
+                  <table className="management-table">
+                    <thead>
+                      <tr>
+                        <th>STT</th>
+                        <th>Họ và tên</th>
+                        <th>Lớp</th>
+                        <th>Cấp đai</th>
+                        <th>Trạng thái</th>
+                      </tr>
+                    </thead>
+
+                    <tbody>
+                      {attendanceListStudents.map((s, i) => (
+                        <tr key={s.id}>
+                          <td>{i + 1}</td>
+                          <td><b>{s.full_name}</b></td>
+                          <td>{s.class_name || '—'}</td>
+                          <td>{s.belt || '—'}</td>
+                          <td>
+                            <span className={
+                              'status-pill ' +
+                              (marks[s.id] === 'Có mặt'
+                                ? 'active'
+                                : marks[s.id] === 'Vắng'
+                                ? 'stopped'
+                                : marks[s.id] === 'Có phép'
+                                ? 'paused'
+                                : '')
+                            }>
+                              {marks[s.id] || 'Chưa điểm danh'}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="empty">
+                  Không có võ sinh thuộc trạng thái "{attendanceView}".
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* BẢNG ĐIỂM DANH CHÍNH - KHÔNG BỊ LỌC KHI BẤM THỐNG KÊ */}
           <div className="scroll">
             <table className="attendance-table">
               <thead>
@@ -1657,7 +1791,7 @@ export default function App() {
               </thead>
 
               <tbody>
-                {filtered.map((s, i) => {
+                {attendanceFiltered.map((s, i) => {
                   const h = statFor(s.id);
                   const p = pct(s.id);
 
@@ -1708,13 +1842,19 @@ export default function App() {
 
             {rowsLoading && <p>Đang tải điểm danh…</p>}
 
-            {!filtered.length &&
-              <p className="empty">Không có võ sinh phù hợp.</p>
+            {!attendanceFiltered.length && !rowsLoading &&
+              <p className="empty">
+                Không có võ sinh phù hợp.
+              </p>
             }
           </div>
 
           <div className="bottom">
-            <span>{filtered.length} võ sinh trong danh sách điểm danh</span>
+            <span>
+              {attendanceFiltered.length} võ sinh đang hiển thị
+              {' · '}
+              {rows.length} võ sinh toàn CLB
+            </span>
           </div>
 
         </> : tab === 'fees' ? <>
