@@ -1,4 +1,3 @@
-
 import { useEffect, useMemo, useState } from 'react';
 import { db, ready } from './supabase';
 
@@ -98,6 +97,9 @@ export default function App() {
   const [feesLoading, setFeesLoading] = useState(false);
   const [creatingInvoices, setCreatingInvoices] = useState(false);
 
+  // TÌM KIẾM HỌC PHÍ
+  const [feeSearch, setFeeSearch] = useState('');
+
   const [payAmounts, setPayAmounts] = useState({});
   const [payMethods, setPayMethods] = useState({});
   const [paying, setPaying] = useState(null);
@@ -139,6 +141,7 @@ export default function App() {
       setHistory({});
       setAccounts([]);
       setAttendanceView('');
+      setFeeSearch('');
       setErr('');
       setTab('list');
     });
@@ -243,7 +246,6 @@ export default function App() {
     setCreatingCoach(true);
 
     try {
-      // Lấy access token mới nhất của tài khoản đang đăng nhập
       const { data: sessionData, error: sessionError } =
         await db.auth.getSession();
 
@@ -259,7 +261,6 @@ export default function App() {
         return;
       }
 
-      // Gửi token rõ ràng đến Edge Function
       const { data, error } = await db.functions.invoke('create-coach', {
         body: {
           username: cleanUsername,
@@ -441,7 +442,7 @@ export default function App() {
 
       const [studentResult, paymentResult] = await Promise.all([
         db.from('students')
-          .select('id,full_name,class_name')
+          .select('id,full_name,class_name,code')
           .in('id', ids),
 
         db.from('tuition_payments')
@@ -1169,6 +1170,23 @@ export default function App() {
       return (order[a.status] ?? 3) - (order[b.status] ?? 3);
     });
 
+  // TRA CỨU HỌC PHÍ THEO TÊN, MÃ VÕ SINH HOẶC LỚP
+  const feeRowsFiltered = feeRows.filter(x => {
+    const keyword = feeSearch.trim().toLocaleLowerCase('vi');
+
+    if (!keyword) return true;
+
+    return [
+      x.student?.full_name,
+      x.student?.code,
+      x.student?.class_name
+    ].some(value =>
+      String(value || '')
+        .toLocaleLowerCase('vi')
+        .includes(keyword)
+    );
+  });
+
   const statFor = id => history[id] || {
     present: 0,
     absent: 0,
@@ -1190,10 +1208,8 @@ export default function App() {
   const excusedStudents = rows.filter(s => marks[s.id] === 'Có phép');
   const unmarkedStudents = rows.filter(s => !marks[s.id]);
 
-  // Bảng điểm danh chính luôn hiển thị theo bộ lọc tìm kiếm và lớp
   const attendanceFiltered = filtered;
 
-  // Danh sách riêng khi bấm vào một trạng thái thống kê
   const attendanceListStudents = filtered.filter(s => {
     if (attendanceView === 'Có mặt') return marks[s.id] === 'Có mặt';
     if (attendanceView === 'Vắng') return marks[s.id] === 'Vắng';
@@ -1706,7 +1722,6 @@ export default function App() {
             </button>
           </div>
 
-          {/* BẢNG DANH SÁCH RIÊNG THEO TRẠNG THÁI */}
           {attendanceView && (
             <div className="card" style={{
               marginTop: 16,
@@ -1776,7 +1791,6 @@ export default function App() {
             </div>
           )}
 
-          {/* BẢNG ĐIỂM DANH CHÍNH - KHÔNG BỊ LỌC KHI BẤM THỐNG KÊ */}
           <div className="scroll">
             <table className="attendance-table">
               <thead>
@@ -1895,29 +1909,63 @@ export default function App() {
           </div>
 
           <p className="section-note">
-            HỌC PHÍ HỌC SINH.
+            TRA CỨU HỌC PHÍ THEO TÊN HOẶC MÃ VÕ SINH.
+            Chọn tháng cần tra cứu, sau đó nhập tên hoặc mã võ sinh.
           </p>
 
+          {/* Ô TÌM KIẾM HỌC PHÍ */}
+          <div className="filters">
+            <input
+              type="search"
+              placeholder="Nhập tên, mã võ sinh hoặc lớp..."
+              value={feeSearch}
+              onChange={e => setFeeSearch(e.target.value)}
+            />
+
+            {feeSearch && (
+              <button
+                type="button"
+                onClick={() => setFeeSearch('')}
+              >
+                Xóa tìm kiếm
+              </button>
+            )}
+          </div>
+
+          {/* THỐNG KÊ THEO KẾT QUẢ TÌM KIẾM */}
           <div className="attendance-summary">
             <div>
-              <b>{feeRows.length}</b>
+              <b>{feeRowsFiltered.length}</b>
               <span>Khoản thu</span>
             </div>
 
             <div>
-              <b>{money(feeRows.reduce((n, x) => n + x.paid, 0))}</b>
+              <b>
+                {money(
+                  feeRowsFiltered.reduce((n, x) => n + x.paid, 0)
+                )}
+              </b>
               <span>Đã thu</span>
             </div>
 
             <div>
-              <b>{money(feeRows.reduce(
-                (n, x) => n + Math.max(0, x.amount_due - x.paid), 0
-              ))}</b>
+              <b>
+                {money(
+                  feeRowsFiltered.reduce(
+                    (n, x) => n + Math.max(0, x.amount_due - x.paid),
+                    0
+                  )
+                )}
+              </b>
               <span>Còn nợ</span>
             </div>
 
             <div>
-              <b>{feeRows.filter(x => x.paid >= x.amount_due).length}</b>
+              <b>
+                {feeRowsFiltered.filter(
+                  x => x.paid >= x.amount_due
+                ).length}
+              </b>
               <span>Đã đóng đủ</span>
             </div>
           </div>
@@ -1926,6 +1974,7 @@ export default function App() {
             <table className="management-table">
               <thead>
                 <tr>
+                  <th>Mã võ sinh</th>
                   <th>Võ sinh</th>
                   <th>Lớp</th>
                   <th>Phải đóng</th>
@@ -1937,10 +1986,14 @@ export default function App() {
               </thead>
 
               <tbody>
-                {feeRows.map(x => {
+                {feeRowsFiltered.map(x => {
                   const left = Math.max(0, x.amount_due - x.paid);
 
                   return <tr key={x.id}>
+                    <td>
+                      <b>{x.student?.code || '—'}</b>
+                    </td>
+
                     <td>
                       <b>{x.student?.full_name || 'Võ sinh đã xóa'}</b>
 
@@ -1991,14 +2044,20 @@ export default function App() {
                             placeholder="Số tiền (có thể nhiều tháng)"
                             value={payAmounts[x.id] || ''}
                             onChange={e =>
-                              setPayAmounts(v => ({ ...v, [x.id]: e.target.value }))
+                              setPayAmounts(v => ({
+                                ...v,
+                                [x.id]: e.target.value
+                              }))
                             }
                           />
 
                           <select
                             value={payMethods[x.id] || 'cash'}
                             onChange={e =>
-                              setPayMethods(v => ({ ...v, [x.id]: e.target.value }))
+                              setPayMethods(v => ({
+                                ...v,
+                                [x.id]: e.target.value
+                              }))
                             }
                           >
                             <option value="cash">Tiền mặt</option>
@@ -2022,25 +2081,35 @@ export default function App() {
 
             {feesLoading && <p>Đang tải học phí…</p>}
 
-            {!feeRows.length && !feesLoading &&
+            {!feeRowsFiltered.length && !feesLoading &&
               <p className="empty">
-                Chưa có khoản học phí cho tháng này.
-                Nhấn “Tạo học phí tháng này”.
+                {feeSearch.trim()
+                  ? 'Không tìm thấy võ sinh phù hợp trong tháng này.'
+                  : 'Chưa có khoản học phí cho tháng này. Nhấn “Tạo học phí tháng này”.'}
               </p>
             }
           </div>
 
           <div className="bottom">
-            <span>{feeRows.length} khoản học phí · {feeMonth}</span>
+            <span>
+              {feeRowsFiltered.length}/{feeRows.length} khoản học phí · {feeMonth}
+            </span>
 
             <button onClick={() =>
               exportCSV(
                 'Hoc_phi_' + feeMonth + '.csv',
                 [
-                  'Võ sinh', 'Lớp', 'Tháng',
-                  'Phải đóng', 'Đã đóng', 'Còn nợ', 'Trạng thái'
+                  'Mã võ sinh',
+                  'Võ sinh',
+                  'Lớp',
+                  'Tháng',
+                  'Phải đóng',
+                  'Đã đóng',
+                  'Còn nợ',
+                  'Trạng thái'
                 ],
-                feeRows.map(x => [
+                feeRowsFiltered.map(x => [
+                  x.student?.code,
                   x.student?.full_name,
                   x.student?.class_name,
                   feeMonth,
@@ -2097,7 +2166,10 @@ export default function App() {
               Cấp đai
               <select
                 value={form.belt}
-                onChange={e => setForm(v => ({ ...v, belt: e.target.value }))}
+                onChange={e => setForm(v => ({
+                  ...v,
+                  belt: e.target.value
+                }))}
               >
                 {belts.map(x => <option key={x}>{x}</option>)}
               </select>
@@ -2107,7 +2179,10 @@ export default function App() {
               Trạng thái tập luyện
               <select
                 value={form.status}
-                onChange={e => setForm(v => ({ ...v, status: e.target.value }))}
+                onChange={e => setForm(v => ({
+                  ...v,
+                  status: e.target.value
+                }))}
               >
                 {['Đang tập', 'Bảo lưu', 'Đã nghỉ'].map(x =>
                   <option key={x}>{x}</option>
@@ -2129,4 +2204,4 @@ export default function App() {
       </div>
     }
   </>;
-}
+         }
