@@ -1895,12 +1895,7 @@ export default function App() {
           </div>
 
           <p className="section-note">
-            Có thể thu 1, 2 tháng, theo quý (3 tháng) hoặc nhiều tháng cùng lúc.
-            Nhập tổng số tiền; hệ thống tự ưu tiên thanh toán tháng nợ cũ nhất
-            trước, sau đó mới đến tháng đang chọn và các tháng tiếp theo.
-            Ví dụ 600.000đ = 2 tháng nếu mức thu là 300.000đ/tháng.
-            Mức mới chỉ áp dụng cho hóa đơn tạo sau này;
-            hóa đơn cũ giữ nguyên.
+            HỌC PHÍ HỌC SINH.
           </p>
 
           <div className="attendance-summary">
